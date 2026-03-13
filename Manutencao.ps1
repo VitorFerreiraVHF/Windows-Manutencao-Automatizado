@@ -173,7 +173,7 @@ Verificar-Servicos
 Write-Host "`n[7/7] Atualizando e escaneando com o Windows Defender..."
 Atualizar-WindowsDefender
 
-Write-Host "`n✅ Manutenção concluída com sucesso!"
+Write-Host "`n Manutenção concluída com sucesso!"
 
 if (-not $Silent) {
     Pause
