@@ -1,6 +1,6 @@
 <#
     Script de manutenção avançada para Windows
-    Última atualização: 11/07/2025
+    Versão Full: Verificação Geral, Hardware, Rede e Corporativo.
 #>
 
 param(
@@ -15,10 +15,17 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit
 }
 
+# --- Configuração de Log ---
+$LogFile = Join-Path $PSScriptRoot "Manutencao_$(Get-Date -Format 'yyyyMMdd_HHmm').log"
+Start-Transcript -Path $LogFile -Append
+Write-Host "Iniciando log em: $LogFile" -ForegroundColor Cyan
+Write-Host "---------------------------------------------------"
+
 # --- Funções auxiliares ---
 function Instalar-Winget {
     Write-Host "winget não encontrado. Tentando instalar..."
-    $wingetMsixUrl = "https://aka.ms/getwinget"
+    # URL direta para o instalador oficial
+    $wingetMsixUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     $wingetInstaller = "$env:TEMP\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     try {
         Invoke-WebRequest -Uri $wingetMsixUrl -OutFile $wingetInstaller -UseBasicParsing
@@ -33,29 +40,43 @@ function Instalar-Winget {
 
 function Limpar-Pasta($Path, $Filtro = '*.*') {
     if (Test-Path $Path) {
-        Write-Host "Limpando: $Path"
+        Write-Host "Limpando: $Path (Itens com mais de $Dias dias)" -ForegroundColor Gray
         try {
-            $itens = Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue
-            $itens | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+            $limitDate = (Get-Date).AddDays(-$Dias)
+            Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt $limitDate } |
+                Where-Object { $_.PSIsContainer -eq $false -or (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -eq 0 } |
+                Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
         } catch {
-            Write-Warning "Erro ao limpar $Path- ${_}"
+            Write-Warning "Alguns itens em $Path estao em uso e foram ignorados."
         }
     }
 }
 
-function Limpar-LogsAntigos {
-    Write-Host "Limpando todos os logs do Windows..."
-    $logDirs = @(
-        "C:\Windows\Logs",
-        "C:\Windows\Temp",
-        "C:\Windows\System32\LogFiles",
-        "C:\Windows\System32\winevt\Logs"
-    )
-    foreach ($dir in $logDirs) {
-        Limpar-Pasta $dir '*.*'
-    }
+function Limpar-WindowsUpdateCache {
+    Write-Host "Limpando cache do Windows Update..." -ForegroundColor Yellow
+    Stop-Service -Name wuauserv, bits -Force -ErrorAction SilentlyContinue
+    Limpar-Pasta "$env:SystemRoot\SoftwareDistribution\Download"
+    Start-Service -Name wuauserv, bits -ErrorAction SilentlyContinue
 }
 
+function Verificar-Bateria {
+    Write-Host "Analisando saúde da bateria..." -ForegroundColor Cyan
+    $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
+    if ($battery) {
+        # Nota: FullChargeCapacity nem sempre está disponível via CIM em todos os notebooks
+        # Em alguns casos, usamos o powercfg /batteryreport para maior precisão
+        $design = $battery.DesignCapacity
+        $full = $battery.FullChargeCapacity
+        if ($design -gt 0 -and $full -gt 0) {
+            $health = [math]::Round(($full / $design), 2)
+            Write-Host "Saúde da Bateria: $($health * 100)%"
+            if ($health -lt 0.15) { Write-Warning "ALERTA: Saúde da bateria crítica (abaixo de 15%)!" }
+        }
+    } else {
+        Write-Host "Bateria não detectada (Desktop)."
+    }
+}
 function Verificar-Servicos {
     $servicos = @(
         "wuauserv",
@@ -89,92 +110,111 @@ function Atualizar-WindowsDefender {
     try {
         Update-MpSignature
         Start-MpScan -ScanType QuickScan
-    } catch {
-        Write-Warning "Falha ao atualizar ou escanear com o Windows Defender. Verifique se ele está habilitado."
-    }
+    } catch { Write-Warning "Falha no Windows Defender." }
 }
 
-# --- Fluxo principal ---
+# --- INÍCIO DO PROCESSO ---
+
+Write-Host "`n[1/8] Verificação Geral do Sistema" -ForegroundColor Cyan
+# Uptime Check
+$lastBoot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+$uptime = (Get-Date) - $lastBoot
+Write-Host "Uptime atual: $($uptime.Days) dias, $($uptime.Hours) horas."
+if ($uptime.Days -gt 14) {
+    Write-Warning "AVISO: O sistema não é reiniciado há mais de 2 semanas!"
+}
+
+# Espaço em Disco
+Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+    $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
+    Write-Host "Disco $($_.DeviceID) - Espaço Livre: $freeGB GB"
+    if ($freeGB -lt 10) { Write-Warning "Espaço em disco baixo no $($_.DeviceID)!" }
+}
+
+Write-Host "`n[2/8] Atualizações de Software e Windows" -ForegroundColor Cyan
+$Whitelist = @{
+    "Apps" = @("Microsoft.Edge", "Mozilla.Firefox", "Google.Chrome", "Git.Git", "7zip.7zip", "Notepad++.Notepad++", "Zoom.Zoom.EXE", "Microsoft.Teams")
+    "Utils" = @("CrystalDewWorld.CrystalDiskInfo", "Microsoft.PowerToys", "Adobe.Acrobat.Reader.64-bit")
+}
+$allWhitelistIds = $Whitelist.Values | ForEach-Object { $_ }
+
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     Instalar-Winget
 }
 
-Write-Host "`n[1/7] Atualizando aplicativos com winget..."
-$apps = @(
-    "CrystalDewWorld.CrystalDiskInfo",
-    "Docker.DockerDesktop",
-    "Git.Git",
-    "Notepad++.Notepad++",
-    "TeamViewer.TeamViewer",
-    "JanDeDobbeleer.OhMyPosh",
-    "Adobe.Acrobat.Reader.64-bit",
-    "Adobe.Acrobat.Reader.32-bit",
-    "Adobe.CreativeCloud",
-    "Google.ChromeRemoteDesktopHost",
-    "Python.Launcher",
-    "Microsoft.Teams.Classic",
-    "Microsoft.Teams",
-    "Microsoft.VCRedist.2015+.x64",
-    "Microsoft.VCRedist.2015+.x86",
-    "GitHub.GitHubDesktop",
-    "Postman.Postman",
-    "Zoom.Zoom.EXE",
-    "XP89DCGQ3K6VLD",
-    "XPDP273C0XHQH2",
-    "7zip.7zip",
-    "EaseUS.PartitionMaster",
-    "OCSInventoryNG.WindowsAgent",
-    "Fortinet.FortiClientVPN",
-    "Microsoft.AzureDataStudio",
-    "Oracle.MySQLWorkbench",
-    "Microsoft.Edge",
-    "Oracle.MySQL",
-    "Microsoft.PowerToys",
-    "Microsoft.SQLServerManagementStudio",
-    "9NZVDKPMR9RD",
-    "Mozilla.Firefox",
-    "Mozilla.Firefox.ESR",
-    "Mozilla.Firefox.MSIX",
-    "Mozilla.Firefox.ESR.MSIX"
-) | Sort-Object -Unique
+$updatesDisponiveisRaw = winget upgrade --accept-source-agreements | Out-String
+$appsParaAtualizar = $allWhitelistIds | Where-Object { $updatesDisponiveisRaw -match [regex]::Escape($_) }
+$totalApps = ($appsParaAtualizar).Count
 
-foreach ($app in $apps) {
-    Write-Host "Atualizando $app ..."
-    winget update --id $app --silent --accept-package-agreements --accept-source-agreements
+if ($totalApps -gt 0) {
+    $current = 1
+    foreach ($app in $appsParaAtualizar) {
+        Write-Host "[$current/$totalApps] Winget -> Atualizando: $app" -ForegroundColor Yellow
+        winget upgrade --id $app --silent --accept-package-agreements --accept-source-agreements --include-unknown -e > $null
+        $current++
+    }
+} else {
+    Write-Host "Aplicativos Winget já estão atualizados." -ForegroundColor Green
 }
 
-Write-Host "`n[2/7] Desinstalando softwares indesejados..."
-winget uninstall Dell.PeripheralManager
-
-Write-Host "`n[3/7] Atualizando Windows e drivers..."
+Write-Host "Verificando Windows Updates (incluindo opcionais/drivers)..."
 Atualizar-WindowsUpdateEdrivers
 
-Write-Host "`n[4/7] Limpando arquivos temporários e logs antigos..."
-Limpar-Pasta $env:TEMP
-Limpar-Pasta "C:\Windows\Temp"
-Get-ChildItem 'C:\Users' -Directory | ForEach-Object {
-    $userTemp = Join-Path $_.FullName 'AppData\Local\Temp'
-    if (Test-Path $userTemp) {
-        Limpar-Pasta $userTemp
-    } else {
-        Write-Warning "Temp não encontrado para o usuário $($_.Name)"
-    }
+Write-Host "`n[3/8] Limpeza do Sistema" -ForegroundColor Cyan
+Limpar-WindowsUpdateCache
+Limpar-Pasta $env:TEMP 0
+Get-CimInstance Win32_UserProfile | Where-Object { $_.Special -eq $false } | ForEach-Object {
+    $userTemp = Join-Path $_.LocalPath 'AppData\Local\Temp'
+    $userDownloads = Join-Path $_.LocalPath 'Downloads'
+    if (Test-Path $userTemp) { Limpar-Pasta $userTemp 0 }
+    if (Test-Path $userDownloads) { Limpar-Pasta $userDownloads 30 }
 }
-Limpar-LogsAntigos
+Limpar-Pasta "$env:SystemRoot\Temp" 0
+Limpar-Pasta "$env:SystemRoot\Prefetch" 0
 
-Write-Host "`n[5/7] Executando manutenção do sistema (DISM/SFC)..."
+Write-Host "Limpando logs de eventos antigos (mais de 14 dias)..."
+$logDirs = @("$env:SystemRoot\Logs", "$env:SystemRoot\System32\LogFiles")
+foreach ($dir in $logDirs) { Limpar-Pasta $dir 14 }
+
+Write-Host "Esvaziando Lixeira..."
+Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+
+Write-Host "Removendo programas indesejados (Dell OS Recovery)..."
+winget uninstall --id "Dell.RecoveryManager" --silent --accept-source-agreements -e 2>$null
+winget uninstall --id "Dell.PeripheralManager" --silent --accept-source-agreements -e 2>$null
+
+Write-Host "`n[4/8] Verificação de Hardware" -ForegroundColor Cyan
+Verificar-Bateria
+
+Write-Host "`n[5/8] Verificação de Rede" -ForegroundColor Cyan
+Write-Host "Limpando cache de DNS..."
+ipconfig /flushdns > $null
+
+Write-Host "`n[6/8] Verificação Corporativa (Domínio/GPO)" -ForegroundColor Cyan
+$compSystem = Get-CimInstance Win32_ComputerSystem
+if ($compSystem.PartOfDomain) {
+    Write-Host "Domínio detectado: $($compSystem.Domain)" -ForegroundColor Green
+    Write-Host "Verificando GPOs aplicadas..."
+    gpresult /r /scope computer | Select-String "Applied Group Policy Objects" -Context 5
+} else {
+    Write-Host "Computador em Workgroup."
+}
+
+Write-Host "`n[7/8] Otimização Final (Reparos de Imagem)" -ForegroundColor Cyan
 DISM /Online /Cleanup-Image /ScanHealth
 DISM /Online /Cleanup-Image /RestoreHealth
 SFC /Scannow
 
-Write-Host "`n[6/7] Verificando status dos serviços principais..."
+Write-Host "`n[8/8] Finalização" -ForegroundColor Cyan
 Verificar-Servicos
-
-Write-Host "`n[7/7] Atualizando e escaneando com o Windows Defender..."
 Atualizar-WindowsDefender
 
 Write-Host "`n Manutenção concluída com sucesso!"
+Stop-Transcript
 
 if (-not $Silent) {
-    Pause
+    $choice = Read-Host "`nManutenção finalizada. Deseja reiniciar a máquina agora? (S/N)"
+    if ($choice -eq 'S' -or $choice -eq 's') {
+        Restart-Computer -Force
+    }
 }
