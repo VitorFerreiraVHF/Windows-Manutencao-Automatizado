@@ -8,7 +8,7 @@ param(
 )
 
 # --- Verificação de permissão administrativa ---
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(`
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Warning "Este script precisa ser executado como Administrador."
     Pause
@@ -16,7 +16,12 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 }
 
 # --- Configuração de Log ---
-$LogFile = Join-Path $PSScriptRoot "Manutencao_$(Get-Date -Format 'yyyyMMdd_HHmm').log"
+$NomeMaquina = $env:COMPUTERNAME
+$UsuarioLogado = $env:USERNAME
+$DataExecucao = Get-Date -Format 'yyyyMMdd_HHmm'
+
+$LogFile = Join-Path $PSScriptRoot "Manutencao_${NomeMaquina}_${UsuarioLogado}_${DataExecucao}.log"
+
 Start-Transcript -Path $LogFile -Append
 Write-Host "Iniciando log em: $LogFile" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
@@ -24,7 +29,6 @@ Write-Host "---------------------------------------------------"
 # --- Funções auxiliares ---
 function Instalar-Winget {
     Write-Host "winget não encontrado. Tentando instalar..."
-    # URL direta para o instalador oficial
     $wingetMsixUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     $wingetInstaller = "$env:TEMP\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     try {
@@ -38,14 +42,14 @@ function Instalar-Winget {
     exit
 }
 
-function Limpar-Pasta($Path, $Filtro = '*.*') {
+function Limpar-Pasta($Path, $Filtro = '.') {
     if (Test-Path $Path) {
         Write-Host "Limpando: $Path (Itens com mais de $Dias dias)" -ForegroundColor Gray
         try {
             $limitDate = (Get-Date).AddDays(-$Dias)
             Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.LastWriteTime -lt $limitDate } |
-                Where-Object { $_.PSIsContainer -eq $false -or (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -eq 0 } |
+                Where-Object { $.PSIsContainer -eq $false -or (Get-ChildItem $.FullName -ErrorAction SilentlyContinue).Count -eq 0 } |
                 Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
         } catch {
             Write-Warning "Alguns itens em $Path estao em uso e foram ignorados."
@@ -64,8 +68,6 @@ function Verificar-Bateria {
     Write-Host "Analisando saúde da bateria..." -ForegroundColor Cyan
     $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
     if ($battery) {
-        # Nota: FullChargeCapacity nem sempre está disponível via CIM em todos os notebooks
-        # Em alguns casos, usamos o powercfg /batteryreport para maior precisão
         $design = $battery.DesignCapacity
         $full = $battery.FullChargeCapacity
         if ($design -gt 0 -and $full -gt 0) {
@@ -77,6 +79,7 @@ function Verificar-Bateria {
         Write-Host "Bateria não detectada (Desktop)."
     }
 }
+
 function Verificar-Servicos {
     $servicos = @(
         "wuauserv",
@@ -113,10 +116,8 @@ function Atualizar-WindowsDefender {
     } catch { Write-Warning "Falha no Windows Defender." }
 }
 
-# --- INÍCIO DO PROCESSO ---
-
 Write-Host "`n[1/8] Verificação Geral do Sistema" -ForegroundColor Cyan
-# Uptime Check
+
 $lastBoot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
 $uptime = (Get-Date) - $lastBoot
 Write-Host "Uptime atual: $($uptime.Days) dias, $($uptime.Hours) horas."
@@ -124,7 +125,6 @@ if ($uptime.Days -gt 14) {
     Write-Warning "AVISO: O sistema não é reiniciado há mais de 2 semanas!"
 }
 
-# Espaço em Disco
 Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
     $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
     Write-Host "Disco $($_.DeviceID) - Espaço Livre: $freeGB GB"
@@ -132,10 +132,12 @@ Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
 }
 
 Write-Host "`n[2/8] Atualizações de Software e Windows" -ForegroundColor Cyan
+
 $Whitelist = @{
     "Apps" = @("Microsoft.Edge", "Mozilla.Firefox", "Google.Chrome", "Git.Git", "7zip.7zip", "Notepad++.Notepad++", "Zoom.Zoom.EXE", "Microsoft.Teams")
     "Utils" = @("CrystalDewWorld.CrystalDiskInfo", "Microsoft.PowerToys", "Adobe.Acrobat.Reader.64-bit")
 }
+
 $allWhitelistIds = $Whitelist.Values | ForEach-Object { $_ }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -144,6 +146,7 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 
 $updatesDisponiveisRaw = winget upgrade --accept-source-agreements | Out-String
 $appsParaAtualizar = $allWhitelistIds | Where-Object { $updatesDisponiveisRaw -match [regex]::Escape($_) }
+
 $totalApps = ($appsParaAtualizar).Count
 
 if ($totalApps -gt 0) {
@@ -161,20 +164,30 @@ Write-Host "Verificando Windows Updates (incluindo opcionais/drivers)..."
 Atualizar-WindowsUpdateEdrivers
 
 Write-Host "`n[3/8] Limpeza do Sistema" -ForegroundColor Cyan
+
 Limpar-WindowsUpdateCache
 Limpar-Pasta $env:TEMP 0
+
 Get-CimInstance Win32_UserProfile | Where-Object { $_.Special -eq $false } | ForEach-Object {
     $userTemp = Join-Path $_.LocalPath 'AppData\Local\Temp'
     $userDownloads = Join-Path $_.LocalPath 'Downloads'
     if (Test-Path $userTemp) { Limpar-Pasta $userTemp 0 }
     if (Test-Path $userDownloads) { Limpar-Pasta $userDownloads 30 }
 }
+
 Limpar-Pasta "$env:SystemRoot\Temp" 0
 Limpar-Pasta "$env:SystemRoot\Prefetch" 0
 
 Write-Host "Limpando logs de eventos antigos (mais de 14 dias)..."
-$logDirs = @("$env:SystemRoot\Logs", "$env:SystemRoot\System32\LogFiles")
-foreach ($dir in $logDirs) { Limpar-Pasta $dir 14 }
+
+$logDirs = @(
+    "$env:SystemRoot\Logs",
+    "$env:SystemRoot\System32\LogFiles"
+)
+
+foreach ($dir in $logDirs) {
+    Limpar-Pasta $dir 14
+}
 
 Write-Host "Esvaziando Lixeira..."
 Clear-RecycleBin -Force -ErrorAction SilentlyContinue
@@ -187,29 +200,32 @@ Write-Host "`n[4/8] Verificação de Hardware" -ForegroundColor Cyan
 Verificar-Bateria
 
 Write-Host "`n[5/8] Verificação de Rede" -ForegroundColor Cyan
-Write-Host "Limpando cache de DNS..."
 ipconfig /flushdns > $null
 
 Write-Host "`n[6/8] Verificação Corporativa (Domínio/GPO)" -ForegroundColor Cyan
+
 $compSystem = Get-CimInstance Win32_ComputerSystem
+
 if ($compSystem.PartOfDomain) {
     Write-Host "Domínio detectado: $($compSystem.Domain)" -ForegroundColor Green
-    Write-Host "Verificando GPOs aplicadas..."
     gpresult /r /scope computer | Select-String "Applied Group Policy Objects" -Context 5
 } else {
     Write-Host "Computador em Workgroup."
 }
 
 Write-Host "`n[7/8] Otimização Final (Reparos de Imagem)" -ForegroundColor Cyan
+
 DISM /Online /Cleanup-Image /ScanHealth
 DISM /Online /Cleanup-Image /RestoreHealth
 SFC /Scannow
 
 Write-Host "`n[8/8] Finalização" -ForegroundColor Cyan
+
 Verificar-Servicos
 Atualizar-WindowsDefender
 
 Write-Host "`n Manutenção concluída com sucesso!"
+
 Stop-Transcript
 
 if (-not $Silent) {
