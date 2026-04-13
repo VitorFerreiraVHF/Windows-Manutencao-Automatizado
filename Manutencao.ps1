@@ -20,9 +20,18 @@ $NomeMaquina = $env:COMPUTERNAME
 $UsuarioLogado = $env:USERNAME
 $DataExecucao = Get-Date -Format 'yyyyMMdd_HHmm'
 
-$LogFile = Join-Path $PSScriptRoot "Manutencao_${NomeMaquina}_${UsuarioLogado}_${DataExecucao}.log"
+# Pasta Logs
+$LogFolder = Join-Path $PSScriptRoot "Logs"
+
+# Criar pasta se não existir
+if (-not (Test-Path $LogFolder)) {
+    New-Item -ItemType Directory -Path $LogFolder | Out-Null
+}
+
+$LogFile = Join-Path $LogFolder "Manutencao_${NomeMaquina}_${UsuarioLogado}_${DataExecucao}.log"
 
 Start-Transcript -Path $LogFile -Append
+
 Write-Host "Iniciando log em: $LogFile" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
 
@@ -34,25 +43,32 @@ function Instalar-Winget {
     try {
         Invoke-WebRequest -Uri $wingetMsixUrl -OutFile $wingetInstaller -UseBasicParsing
         Add-AppxPackage -Path $wingetInstaller
-        Write-Host "winget instalado. Por favor, reinicie o computador e execute o script novamente."
+        Write-Host "winget instalado. Reinicie o computador e execute novamente."
     } catch {
-        Write-Warning "Falha ao instalar o winget. Instale manualmente via Microsoft Store."
+        Write-Warning "Falha ao instalar o winget."
     }
     Pause
     exit
 }
 
-function Limpar-Pasta($Path, $Filtro = '.') {
+function Limpar-Pasta($Path, $Dias = 0) {
     if (Test-Path $Path) {
         Write-Host "Limpando: $Path (Itens com mais de $Dias dias)" -ForegroundColor Gray
         try {
             $limitDate = (Get-Date).AddDays(-$Dias)
+
             Get-ChildItem -Path $Path -Recurse -Force -ErrorAction SilentlyContinue |
-                Where-Object { $_.LastWriteTime -lt $limitDate } |
-                Where-Object { $.PSIsContainer -eq $false -or (Get-ChildItem $.FullName -ErrorAction SilentlyContinue).Count -eq 0 } |
-                Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+            Where-Object {
+                $_.LastWriteTime -lt $limitDate -and
+                (
+                    -not $_.PSIsContainer -or
+                    (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -eq 0
+                )
+            } |
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+
         } catch {
-            Write-Warning "Alguns itens em $Path estao em uso e foram ignorados."
+            Write-Warning "Alguns itens em $Path estão em uso."
         }
     }
 }
@@ -67,170 +83,157 @@ function Limpar-WindowsUpdateCache {
 function Verificar-Bateria {
     Write-Host "Analisando saúde da bateria..." -ForegroundColor Cyan
     $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
+
     if ($battery) {
         $design = $battery.DesignCapacity
         $full = $battery.FullChargeCapacity
+
         if ($design -gt 0 -and $full -gt 0) {
             $health = [math]::Round(($full / $design), 2)
             Write-Host "Saúde da Bateria: $($health * 100)%"
-            if ($health -lt 0.15) { Write-Warning "ALERTA: Saúde da bateria crítica (abaixo de 15%)!" }
+
+            if ($health -lt 0.15) {
+                Write-Warning "Saúde da bateria crítica"
+            }
         }
     } else {
-        Write-Host "Bateria não detectada (Desktop)."
+        Write-Host "Bateria não detectada"
     }
 }
 
 function Verificar-Servicos {
+
     $servicos = @(
         "wuauserv",
         "msiserver",
         "bits",
         "TrustedInstaller"
     )
+
     Write-Host "`nStatus dos serviços principais:"
+
     foreach ($srv in $servicos) {
         $status = Get-Service -Name $srv -ErrorAction SilentlyContinue
+
         if ($status) {
             Write-Host ("{0,-25} {1}" -f $status.DisplayName, $status.Status)
-        } else {
-            Write-Host ("{0,-25} NÃO ENCONTRADO" -f $srv)
         }
     }
 }
 
 function Atualizar-WindowsUpdateEdrivers {
-    Write-Host "Forçando atualização do Windows Update (incluindo drivers)..."
+
+    Write-Host "Atualizando Windows Update..."
+
     if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue
-        Install-Module -Name PSWindowsUpdate -Force -AllowClobber -Scope CurrentUser
+        Install-PackageProvider -Name NuGet -Force
+        Install-Module PSWindowsUpdate -Force
     }
+
     Import-Module PSWindowsUpdate
-    Get-WindowsUpdate -AcceptAll -Install -MicrosoftUpdate -Drivers -AutoReboot:$false
+
+    Get-WindowsUpdate -AcceptAll -Install -MicrosoftUpdate -IgnoreReboot
 }
 
 function Atualizar-WindowsDefender {
-    Write-Host "`nAtualizando definições do Windows Defender..."
+
+    Write-Host "Atualizando Windows Defender..."
+
     try {
         Update-MpSignature
         Start-MpScan -ScanType QuickScan
-    } catch { Write-Warning "Falha no Windows Defender." }
+    } catch {
+        Write-Warning "Falha no Defender"
+    }
 }
 
 Write-Host "`n[1/8] Verificação Geral do Sistema" -ForegroundColor Cyan
 
 $lastBoot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
 $uptime = (Get-Date) - $lastBoot
-Write-Host "Uptime atual: $($uptime.Days) dias, $($uptime.Hours) horas."
+
+Write-Host "Uptime atual: $($uptime.Days) dias"
+
 if ($uptime.Days -gt 14) {
-    Write-Warning "AVISO: O sistema não é reiniciado há mais de 2 semanas!"
+    Write-Warning "Sistema sem reiniciar há mais de 14 dias"
 }
 
 Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+
     $freeGB = [math]::Round($_.FreeSpace / 1GB, 2)
-    Write-Host "Disco $($_.DeviceID) - Espaço Livre: $freeGB GB"
-    if ($freeGB -lt 10) { Write-Warning "Espaço em disco baixo no $($_.DeviceID)!" }
+
+    Write-Host "Disco $($_.DeviceID) - Livre: $freeGB GB"
+
+    if ($freeGB -lt 10) {
+        Write-Warning "Pouco espaço em disco"
+    }
 }
 
-Write-Host "`n[2/8] Atualizações de Software e Windows" -ForegroundColor Cyan
-
-$Whitelist = @{
-    "Apps" = @("Microsoft.Edge", "Mozilla.Firefox", "Google.Chrome", "Git.Git", "7zip.7zip", "Notepad++.Notepad++", "Zoom.Zoom.EXE", "Microsoft.Teams")
-    "Utils" = @("CrystalDewWorld.CrystalDiskInfo", "Microsoft.PowerToys", "Adobe.Acrobat.Reader.64-bit")
-}
-
-$allWhitelistIds = $Whitelist.Values | ForEach-Object { $_ }
+Write-Host "`n[2/8] Atualizações"
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     Instalar-Winget
 }
 
-$updatesDisponiveisRaw = winget upgrade --accept-source-agreements | Out-String
-$appsParaAtualizar = $allWhitelistIds | Where-Object { $updatesDisponiveisRaw -match [regex]::Escape($_) }
+winget upgrade --all --silent --accept-package-agreements --accept-source-agreements
 
-$totalApps = ($appsParaAtualizar).Count
-
-if ($totalApps -gt 0) {
-    $current = 1
-    foreach ($app in $appsParaAtualizar) {
-        Write-Host "[$current/$totalApps] Winget -> Atualizando: $app" -ForegroundColor Yellow
-        winget upgrade --id $app --silent --accept-package-agreements --accept-source-agreements --include-unknown -e > $null
-        $current++
-    }
-} else {
-    Write-Host "Aplicativos Winget já estão atualizados." -ForegroundColor Green
-}
-
-Write-Host "Verificando Windows Updates (incluindo opcionais/drivers)..."
 Atualizar-WindowsUpdateEdrivers
 
-Write-Host "`n[3/8] Limpeza do Sistema" -ForegroundColor Cyan
+Write-Host "`n[3/8] Limpeza"
 
 Limpar-WindowsUpdateCache
-Limpar-Pasta $env:TEMP 0
 
-Get-CimInstance Win32_UserProfile | Where-Object { $_.Special -eq $false } | ForEach-Object {
-    $userTemp = Join-Path $_.LocalPath 'AppData\Local\Temp'
-    $userDownloads = Join-Path $_.LocalPath 'Downloads'
-    if (Test-Path $userTemp) { Limpar-Pasta $userTemp 0 }
-    if (Test-Path $userDownloads) { Limpar-Pasta $userDownloads 30 }
+Limpar-Pasta $env:TEMP
+
+Get-CimInstance Win32_UserProfile | Where-Object {$_.Special -eq $false} | ForEach-Object {
+
+    $temp = Join-Path $_.LocalPath "AppData\Local\Temp"
+
+    if (Test-Path $temp) {
+        Limpar-Pasta $temp
+    }
 }
 
-Limpar-Pasta "$env:SystemRoot\Temp" 0
-Limpar-Pasta "$env:SystemRoot\Prefetch" 0
-
-Write-Host "Limpando logs de eventos antigos (mais de 14 dias)..."
-
-$logDirs = @(
-    "$env:SystemRoot\Logs",
-    "$env:SystemRoot\System32\LogFiles"
-)
-
-foreach ($dir in $logDirs) {
-    Limpar-Pasta $dir 14
-}
-
-Write-Host "Esvaziando Lixeira..."
 Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 
-Write-Host "Removendo programas indesejados (Dell OS Recovery)..."
-winget uninstall --id "Dell.RecoveryManager" --silent --accept-source-agreements -e 2>$null
-winget uninstall --id "Dell.PeripheralManager" --silent --accept-source-agreements -e 2>$null
+Write-Host "`n[4/8] Hardware"
 
-Write-Host "`n[4/8] Verificação de Hardware" -ForegroundColor Cyan
 Verificar-Bateria
 
-Write-Host "`n[5/8] Verificação de Rede" -ForegroundColor Cyan
-ipconfig /flushdns > $null
+Write-Host "`n[5/8] Rede"
 
-Write-Host "`n[6/8] Verificação Corporativa (Domínio/GPO)" -ForegroundColor Cyan
+ipconfig /flushdns
 
-$compSystem = Get-CimInstance Win32_ComputerSystem
+Write-Host "`n[6/8] Domínio"
 
-if ($compSystem.PartOfDomain) {
-    Write-Host "Domínio detectado: $($compSystem.Domain)" -ForegroundColor Green
-    gpresult /r /scope computer | Select-String "Applied Group Policy Objects" -Context 5
-} else {
-    Write-Host "Computador em Workgroup."
+$comp = Get-CimInstance Win32_ComputerSystem
+
+if ($comp.PartOfDomain) {
+    Write-Host "Domínio: $($comp.Domain)"
 }
 
-Write-Host "`n[7/8] Otimização Final (Reparos de Imagem)" -ForegroundColor Cyan
+Write-Host "`n[7/8] Reparos"
 
 DISM /Online /Cleanup-Image /ScanHealth
 DISM /Online /Cleanup-Image /RestoreHealth
 SFC /Scannow
 
-Write-Host "`n[8/8] Finalização" -ForegroundColor Cyan
+Write-Host "`n[8/8] Finalização"
 
 Verificar-Servicos
+
 Atualizar-WindowsDefender
 
-Write-Host "`n Manutenção concluída com sucesso!"
+Write-Host "`nManutenção concluída com sucesso"
 
 Stop-Transcript
 
 if (-not $Silent) {
-    $choice = Read-Host "`nManutenção finalizada. Deseja reiniciar a máquina agora? (S/N)"
-    if ($choice -eq 'S' -or $choice -eq 's') {
+
+    $choice = Read-Host "Deseja reiniciar? (S/N)"
+
+    if ($choice -eq "S") {
         Restart-Computer -Force
     }
+
 }
