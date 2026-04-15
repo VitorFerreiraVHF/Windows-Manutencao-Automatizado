@@ -1,11 +1,7 @@
-<#
-Script: Consolidação de Logs de Manutenção
-Autor: Vitor + ChatGPT
-Descrição: Lê logs da pasta Logs e gera Excel consolidado
-#>
+
 
 Write-Host "=========================================="
-Write-Host "Consolidador de Logs de Manutenção"
+Write-Host "Consolidador de Logs de Manutencao"
 Write-Host "=========================================="
 Write-Host ""
 
@@ -16,14 +12,14 @@ $ArquivoSaida = Join-Path $ScriptRoot "Consolidado_Manutencao.xlsx"
 
 # Verifica se pasta existe
 if (-not (Test-Path $LogsFolder)) {
-    Write-Host "Pasta Logs não encontrada." -ForegroundColor Red
+    Write-Host "Pasta Logs nao encontrada." -ForegroundColor Red
     exit
 }
 
-# Verifica módulo Excel
+# Verifica modulo Excel
 if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
 
-    Write-Host "Instalando módulo ImportExcel..." -ForegroundColor Yellow
+    Write-Host "Instalando modulo ImportExcel..." -ForegroundColor Yellow
 
     Install-Module ImportExcel -Scope CurrentUser -Force -AllowClobber
 }
@@ -74,11 +70,11 @@ foreach ($Log in $Logs) {
         $Status = "Sucesso"
     }
 
-    # Tempo Execução
+    # Tempo Execucao
     $TempoExecucao = ""
 
-    $Inicio = ($Conteudo | Select-String "Hora de início").Line
-    $Fim = ($Conteudo | Select-String "Hora de término").Line
+    $Inicio = ($Conteudo | Select-String "Hora de ini�cio").Line
+    $Fim = ($Conteudo | Select-String "Hora de termino").Line
 
     if ($Inicio -and $Fim) {
 
@@ -134,7 +130,7 @@ foreach ($Log in $Logs) {
     }
 }
 
-# Estatísticas
+# Estati�sticas
 
 $Estatisticas = @()
 
@@ -180,7 +176,7 @@ $Estatisticas | Export-Excel $ArquivoSaida `
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
-Write-Host "Consolidação finalizada com sucesso"
+Write-Host "Consolidacao finalizada com sucesso"
 Write-Host "Arquivo gerado:"
 Write-Host $ArquivoSaida
 Write-Host "=========================================="
