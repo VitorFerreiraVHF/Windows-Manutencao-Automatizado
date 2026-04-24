@@ -214,6 +214,7 @@ if ($comp.PartOfDomain) {
 
 Write-Host "`n[7/8] Reparos"
 
+Get-WmiObject win32_bios | Select-Object SerialNumber
 DISM /Online /Cleanup-Image /ScanHealth
 DISM /Online /Cleanup-Image /RestoreHealth
 SFC /Scannow
