@@ -18,6 +18,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 # --- Configuração de Log ---
 $NomeMaquina = $env:COMPUTERNAME
 $UsuarioLogado = $env:USERNAME
+$ServiceTag = (Get-WmiObject Win32_BIOS | Select-Object -ExpandProperty SerialNumber)
 $DataExecucao = Get-Date -Format 'yyyyMMdd_HHmm'
 
 # Pasta Logs
@@ -28,7 +29,7 @@ if (-not (Test-Path $LogFolder)) {
     New-Item -ItemType Directory -Path $LogFolder | Out-Null
 }
 
-$LogFile = Join-Path $LogFolder "Manutencao_${NomeMaquina}_${UsuarioLogado}_${DataExecucao}.log"
+$LogFile = Join-Path $LogFolder "Manutencao_${NomeMaquina}_${UsuarioLogado}_${ServiceTag}_${DataExecucao}.log"
 
 Start-Transcript -Path $LogFile -Append
 
