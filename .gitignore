@@ -1,2 +1,4 @@
 *.log
 *.xlsx
+Logs/
+Artifacts/
