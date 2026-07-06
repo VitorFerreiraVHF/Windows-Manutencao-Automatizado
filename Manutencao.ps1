@@ -393,17 +393,19 @@ function Atualizar-ProgramasCorporativos {
         Instalar-Winget | Out-Null
     }
 
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Atualizando aplicativos via winget..." -ForegroundColor Yellow
-        winget source update
-        winget upgrade --all --silent --accept-package-agreements --accept-source-agreements
+    Registrar-Observacao "Atualizacao de aplicativos via winget temporariamente desabilitada no script."
 
-        if ($LASTEXITCODE -eq 0) {
-            Registrar-Resultado "Softwares atualizados via winget, incluindo ferramentas corporativas catalogadas."
-        } else {
-            Registrar-Pendencia "winget upgrade retornou codigo $LASTEXITCODE; validar aplicativos pendentes."
-        }
-    }
+    # if (Get-Command winget -ErrorAction SilentlyContinue) {
+    #     Write-Host "Atualizando aplicativos via winget..." -ForegroundColor Yellow
+    #     winget source update
+    #     winget upgrade --all --silent --accept-package-agreements --accept-source-agreements
+    #
+    #     if ($LASTEXITCODE -eq 0) {
+    #         Registrar-Resultado "Softwares atualizados via winget, incluindo ferramentas corporativas catalogadas."
+    #     } else {
+    #         Registrar-Pendencia "winget upgrade retornou codigo $LASTEXITCODE; validar aplicativos pendentes."
+    #     }
+    # }
 
     Validar-AppsCorporativos
 }
